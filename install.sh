@@ -71,6 +71,19 @@ fetch_lfs "opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition
 fetch_plain "facenox/face-antispoof-onnx/main/models/best/98.20/best_model.onnx" \
     "models/antispoof_minifas.onnx" 1912594
 
+say "Checking the NPU runtime (optional)"
+if [ -e /dev/vipcore ]; then
+    echo "  /dev/vipcore present"
+else
+    warn "/dev/vipcore missing: the 'vipcore' kernel module is not loaded (NPU will be skipped)."
+fi
+if [ -e /usr/lib/libNBGlinker.so ] || [ -e /usr/local/lib/libNBGlinker.so ]; then
+    echo "  VIPLite libraries found"
+else
+    warn "VIPLite libraries not found. Install them with:"
+    warn "  sudo ./tools/install_npu_runtime.sh"
+fi
+
 say "Verifying the anti-spoof model loads through OpenCV"
 "$VENV/bin/python" - <<'PY' || die "Anti-spoof model could not be loaded by OpenCV."
 import cv2, numpy as np

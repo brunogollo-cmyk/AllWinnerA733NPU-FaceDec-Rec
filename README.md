@@ -73,14 +73,32 @@ O script:
 - baixa os modelos ONNX que faltam (`models/yunet.onnx`,
   `models/antispoof_minifas.onnx` e o SFace) conferindo o tamanho em bytes.
 
-### 3. (Opcional) Conferir a NPU
+### 3. Instalar o runtime da NPU (se a placa ainda não tiver)
 
-Com os grafos já incluídos, basta verificar o runtime:
+O repositório já inclui o runtime VIPLite aarch64 do A733 em
+`tools/npu_runtime/A733/` (`libNBGlinker.so` + `libVIPhal.so`), além dos dois
+grafos `.nb`. Para instalar as libs no sistema:
 
 ```bash
-grep NBGlinker /proc/self/maps >/dev/null 2>&1 || ls -l /usr/lib/libNBGlinker.so
-ls -l /dev/vipcore
+sudo ./tools/install_npu_runtime.sh
 ```
+
+O script copia para `/usr/local/lib`, roda `ldconfig` e verifica `/dev/vipcore`.
+Se a placa já tem o SDK/runtime em `/usr/lib`, pode pular esta etapa.
+
+> O módulo de kernel `vipcore` (que cria `/dev/vipcore`) é específico da imagem
+> da placa e **não** acompanha o repositório. Se `/dev/vipcore` não existir,
+> tente `sudo modprobe vipcore`; sem ele o sistema roda em CPU. Detalhes em
+> [`tools/npu_runtime/README.md`](tools/npu_runtime/README.md).
+
+Valide a NPU antes de seguir:
+
+```bash
+./.venv/bin/python tools/check_npu.py
+```
+
+Saída esperada: `driver=0x00020003 cid=0x1000003b`, os dois grafos com `OK` e
+`NPU OK` no final.
 
 ### 4. Cadastrar as pessoas (via terminal ou pela página web)
 

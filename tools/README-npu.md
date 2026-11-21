@@ -1,167 +1,111 @@
-# Rebuilding the NPU graph for facegate
+# (Re)building the `.nb` graphs
 
-`models/npu/sface_int8.nb` is the SFace recogniser, converted to INT8 and
-compiled for the T527's VeriSilicon VIP9000 NPU. This is what lets facegate
-embed a face in ~15 ms instead of ~68 ms.
+The NPU only executes Vivante **`.nb`** network binaries, so the ONNX models are
+converted offline with Allwinner's **ACUITY/pegasus** toolkit and compiled for the
+target chip. The A733 builds used by default are committed:
 
-This document exists because regenerating the file is not a one-liner: the
-converter (Vivante Acuity) only runs inside an x86_64 Docker image that Allwinner
-distributes separately, so the model is built on another machine and copied here.
+| File | Source model | Input | Output |
+|---|---|---|---|
+| `models/npu/yunet.nb` | `models/yunet.onnx` | `1x3x640x640` uint8 image (HWC) | 12 raw heads (cls/obj/bbox/kps × strides 8/16/32) |
+| `models/npu/sface_int8.nb` | `face_recognition_sface_2021dec.onnx` | `1x3x112x112` float16 | `1x128` embedding |
 
-## What the conversion actually is
+Target: **`VIP9000NANODI_PLUS_PID0X1000003B`** (`cid=0x1000003B`), VIPLite 2.0.
+A `.nb` built for another target is rejected by the driver (`vip_create_network
+failed: -7`), so the target string and the platform are not interchangeable.
 
-```
-face_recognition_sface_2021dec.onnx   (37 MB, float32, 9.67M params)
-        │  pegasus import onnx
-        ▼
-sface.json + sface.data                 (Acuity intermediate)
-        │  pegasus quantize  (perchannel_symmetric_affine, int8, KL)
-        ▼
-sface.quantize                          (activation ranges)
-        │  pegasus export ovxlib --pack-nbg-unify
-        ▼
-network_binary.nb                       (7.9 MB, runs on VIP9000)
-```
+## A733 build (current, ACUITY v2.0)
 
-The target string `VIP9000NANOSI_PLUS_PID0X10000016` is this board's chip id -
-`vip_query_hardware` reports `cid=0x10000016` at runtime. Using the wrong
-target produces a `.nb` the driver rejects.
+The converter only runs on x86_64, inside Allwinner's Docker image.
 
-Note the T527 ships Acuity **v1.8.13**; the `v2.0.x` image is for the A733.
+1. **Get and load the image** (Radxa docs → Allwinner netdisk, A733 tab):
 
-## Measured result
+   ```bash
+   unzip docker_images_v2.0.x.zip
+   cd docker_images_v2.0.x
+   unzip ubuntu-npu_v2.0.10.2.tar.zip
+   sudo docker load -i ubuntu-npu_v2.0.10.2.tar
+   sudo docker run --ipc=host -itd -v "$PWD:/workspace" \
+       --name acuity_a733 ubuntu-npu:v2.0.10.2 /bin/bash
+   ```
 
-| | CPU | NPU |
-|---|---|---|
-| SFace embed | ~68 ms | **~15 ms** (median, p95 16.8) |
+   Inside the container: ACUITY at `/root/acuity-toolkit-whl-6.30.22/bin`
+   (pegasus 6.30.22), Vivante IDE at
+   `/root/Vivante_IDE/VivanteIDE5.11.0/cmdtools`.
 
-Agreement between the two paths, over 20 real camera crops:
+2. **Run the model-zoo scripts** per model (import → quantize → export). The
+   `scripts_model_convert/pegasus_*.sh` from Allwinner's AWNPU Model Zoo are
+   copied into `tools/nb_convert_a733/scripts/` and used like this:
 
-```
-cosine(NPU, CPU) = 0.9916   (min 0.9879, max 0.9946)
-```
+   ```bash
+   export ACUITY_PATH=/root/acuity-toolkit-whl-6.30.22/bin
+   export VIV_SDK=/root/Vivante_IDE/VivanteIDE5.11.0/cmdtools
+   export PATH=$ACUITY_PATH:$PATH
 
-In a live run against the enrolled float32 database, the NPU and CPU paths
-produced the **same identity decision on 70/70 frames** with mean pairwise
-cosine 0.9998. That is why `data/facedb.json` needs no re-enrolment when you
-switch `recognizer.use_npu`.
+   ./pegasus_import.sh sface
+   ./pegasus_quantize.sh sface uint8 10
+   ./pegasus_export_ovx_nbg.sh sface uint8 a733
+   # -> wksp/sface_uint8_nbg_unify/sface_uint8_a733.nb
+   ```
 
-## Regenerating it
+   `a733` maps to `VIP9000NANODI_PLUS_PID0X1000003B` in
+   `pegasus_export_ovx_nbg.sh`. Do the same with `yunet`.
 
-### 1. On an x86_64 machine, get the ACUITY image
+   Calibration data: `dataset_widerface_10/` (images resized to the model input)
+   works for detection. For SFace, prefer aligned 112x112 face crops; the
+   embedding space shifts slightly with the calibration set, so validate
+   `cosine(NPU, CPU)` after building.
 
-From Radxa's docs (which point at Allwinner's netdisk):
+3. **Copy the result** into `models/npu/` and run
+   `./.venv/bin/python tools/check_npu.py` on the board.
 
-- T527: `https://netstorage.allwinnertech.com:5001/sharing/N6TVlZQVZ` -> `docker_images_v1.8.x.zip`
-- A733: `.../sharing/Mh23BhPHq` -> `docker_images_v2.0.x.zip`
+`tools/nb_convert_a733/` keeps the source ONNX files, the calibration set, the
+model-zoo scripts and starter `config_yml.py` files, so the conversion can be
+reproduced without hunting for inputs.
 
-```bash
-unzip docker_images_v1.8.x.zip
-cd docker_images_v1.8.x
-unzip ubuntu-npu_v1.8.13.tar.zip
-md5sum -c ubuntu-npu_v1.8.13.tar.zip_md5sum.txt
-sudo docker load -i ubuntu-npu_v1.8.13.tar
-sudo docker run --ipc=host -d -v "$PWD/work:/workspace" \
-    --name acuity_t527 ubuntu-npu:v1.8.13 sleep infinity
-```
+### YuNet specifics
 
-### 2. Import
+The exported YuNet graph keeps the raw detection heads. `facegate/detector.py`
+takes the 12 outputs, groups them by stride, applies `score = cls * obj`,
+decodes boxes (`cx + dx·s`, `exp(dw)·s`, …), maps the 5 keypoints and runs NMS.
+The graph input is a raw uint8 image (the ACUITY preproc node does resize /
+channel order), so Python only resizes to 640×640.
 
-```bash
-pegasus import onnx \
-  --model sface.onnx --inputs data --outputs fc1 \
-  --input-size-list "3,112,112" \
-  --output-model sface.json --output-data sface.data
-```
+### SFace specifics
 
-Input/output tensor names come from the ONNX graph: `data` in, `fc1` out.
+Input is a float16 NCHW tensor of the aligned 112×112 crop; output is one
+uint8-asymmetric-affine tensor of 128 values, divided by its scale and
+L2-normalised in `NpuRecognizer`. Keep that output layout: the enrolled
+`data/facedb.json` is only valid if the embedding space stays the same.
 
-### 3. Calibrate
+## T527 (legacy)
 
-Quantisation needs real activation ranges, so use real faces - not random
-noise. Capture 50-100 aligned 112x112 crops from the actual camera.
+The same flow works on the T527, but with different artifacts:
 
-`calib_database.txt` is a bare list of image paths (no header; the shape comes
-from the model), and the input meta must point at it:
+- image `ubuntu-npu:v1.8.13` (`docker_images_v1.8.x.zip`), ACUITY v1.8.13;
+- platform/target `VIP9000NANOSI_PLUS_PID0X10000016` (`cid=0x10000016`);
+- runtime `libVIPlite.so` + `libVIPuser.so` from SDK v1.x instead of
+  `libNBGlinker.so` + `libVIPhal.so`.
 
-```yaml
-preproc_type: IMAGE_RGB
-cal_database: /workspace/calib_database.txt
-iterations: 60
-```
+Do **not** mix the images: a v2.0 graph does not run on a v1.x runtime, and vice
+versa.
 
-Take the `pegasus generate inputmeta` output and add those two keys.
+## Runtime and kernel module
 
-```bash
-pegasus quantize \
-  --model sface.json --model-data sface.data \
-  --quantizer perchannel_symmetric_affine --qtype int8 \
-  --with-input-meta calib_meta.yml --iterations 60 \
-  --algorithm kl_divergence --device CPU --output-dir quant
-```
+The A733 userspace runtime is in `tools/npu_runtime/A733/`; install it with
+`sudo ./tools/install_npu_runtime.sh`. The kernel module `vipcore` that creates
+`/dev/vipcore` is part of the board image and is **not** redistributed here —
+see `tools/npu_runtime/README.md`.
 
-### 4. Export
+## Validating a build
 
-```bash
-pegasus export ovxlib \
-  --model sface.json --model-data sface.data \
-  --model-quantize quant/sface.quantize \
-  --dtype quantized --with-input-meta calib_meta.yml \
-  --pack-nbg-unify \
-  --optimize VIP9000NANOSI_PLUS_PID0X10000016 \
-  --viv-sdk /root/Vivante_IDE/VivanteIDE5.8.2/cmdtools \
-  --output-path nbg
-```
-
-`--pack-nbg-unify` is what produces a portable `.nb`; without it you get C
-source for a different runtime. Note that `--output-path` is *concatenated* onto
-the directory, so `nbg` lands in `./nbg_unify/`, not `./nbg/nbg_unify/`.
-
-### 5. Copy here
+`npu.py` mirrors the vendor's `vpm_run` call sequence and queries buffer
+descriptors from the graph instead of hardcoding them, so a differently shaped
+model works unchanged. On the board:
 
 ```bash
-scp nbg_unify/network_binary.nb \
-    facegate/models/npu/sface_int8.nb
+./.venv/bin/python tools/check_npu.py
 ```
 
-## The VIPLite runtime
-
-`recognizer.viplite_dir` points at a copy of the Allwinner VIPLite v1.13
-runtime. It comes from the public SDK, no NDA needed:
-
-```bash
-git clone --depth 1 -b product-aiot-stable \
-    https://gitlab.com/tina5.0_aiot/ai-sdk.git
-# -> viplite-tina/lib/glibc-gcc10_2_0/v1.13/{libVIPlite.so,libVIPuser.so,inc/}
-```
-
-Use the `glibc-gcc10_2_0` build. The `aarch64-none-linux-gnu` build is for a
-bare-metal toolchain, and any Ubuntu 24.04 build of the tools wants glibc 2.38
-while this board runs 2.36.
-
-## Using it
-
-```yaml
-recognizer:
-  use_npu: true
-  npu_model: "models/npu/sface_int8.nb"
-```
-
-Set `use_npu: false` to go back to the CPU float32 model. The two produce
-interchangeable embeddings, so switching does not invalidate the database.
-
-If anything is missing - the graph, the library, or `/dev/vipcore` - facegate
-logs `NPU backend unavailable (...) - using CPU` and keeps working.
-
-## Files
-
-- `facegate/npu.py` - ctypes binding for VIPLite. Mirrors the vendor's
-  `vpm_run.c` call sequence, and queries buffer descriptors from the graph
-  rather than hardcoding them, so a differently-shaped model works unchanged.
-- `tools/npu_embed.c` - standalone CLI that prints one embedding. Useful for
-  A/B checking the graph against the CPU model:
-  ```bash
-  gcc -O2 -I<sdk>/inc -o npu_embed tools/npu_embed.c -L<sdk> -lVIPlite -lVIPuser -lm
-  LD_LIBRARY_PATH=<sdk> ./npu_embed models/npu/sface_int8.nb input.dat
-  ```
-  `input.dat` is float16 NCHW 1x3x112x112 RGB.
+prints driver version, chip id, input/output shapes and one inference per graph.
+`tools/npu_embed.c` is a standalone C CLI for A/B checking a single embedding
+against the CPU model.

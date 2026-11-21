@@ -163,6 +163,8 @@ class NpuSession:
         lib_path = self._find_lib()
         if not lib_path.exists():
             raise NpuUnavailable(f"{lib_path} not found")
+        # Companion libraries live next to the linker library that was found.
+        self._lib_dir = lib_path.parent
         if not self.nb_path.exists():
             raise NpuUnavailable(f"{self.nb_path} not found")
         if not Path("/dev/vipcore").exists():
@@ -171,7 +173,7 @@ class NpuSession:
         # libVIPhal carries the hardware abstraction the linker needs, and the
         # linker resolves the vip_* symbols; load both globally first.
         for name in _LIB_PAIRS[0][1:]:
-            candidate = self.lib_dir / name
+            candidate = self._lib_dir / name
             if candidate.exists():
                 ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
         self._lib = ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
@@ -181,10 +183,13 @@ class NpuSession:
     # ----------------------------------------------------------------- setup
 
     def _find_lib(self):
+        # Look where the config points first, then the usual install locations.
+        dirs = [self.lib_dir, Path("/usr/local/lib"), Path("/usr/lib")]
         for names in _LIB_PAIRS:
-            primary = self.lib_dir / names[0]
-            if primary.exists():
-                return primary
+            for directory in dirs:
+                primary = directory / names[0]
+                if primary.exists():
+                    return primary
         return self.lib_dir / "libNBGlinker.so"
 
     def _bind_api(self) -> None:

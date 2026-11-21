@@ -8,6 +8,13 @@ it for the SFace embedding (the most expensive step) and for YuNet face detectio
 `models/npu/sface_int8.nb`, target `VIP9000NANODI_PLUS_PID0X1000003B`), so both
 functions can run on the NPU on an Orange Pi Zero 3W without rebuilding anything.
 
+The userspace runtime is included as well (`tools/npu_runtime/A733/`:
+`libNBGlinker.so` + `libVIPhal.so`); install it with
+`sudo ./tools/install_npu_runtime.sh` if the board does not already ship it, and
+check the whole path with `./.venv/bin/python tools/check_npu.py`. The kernel
+module `vipcore` that provides `/dev/vipcore` comes from the board image and is
+not redistributed here.
+
 | | CPU | NPU (A733 int8) |
 |---|---|---|
 | SFace embed | ~68 ms | **~2 ms per graph run** |
