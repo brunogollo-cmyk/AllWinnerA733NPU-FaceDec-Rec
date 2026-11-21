@@ -72,3 +72,18 @@ NPU OK
 
 Se `/dev/vipcore` não existir, o `facegate` continua funcionando em CPU e
 registra `NPU backend unavailable (...) - using CPU`.
+
+## Verificado nesta placa
+
+Orange Pi Zero 3W (A733), kernel `6.6.98-sun60iw2`, VIPLite `2.0.3.2-AW-2024-08-30`:
+
+```
+device: present
+yunet.nb       in=1228800B dims=[640,640,3,1] fmt=2 outs=12 run=6.7 ms  OK
+sface_int8.nb  in=75264B   dims=[112,112,3,1] fmt=1 outs=1  run=2.3 ms  OK
+NPU OK
+```
+
+O mesmo teste passa com as libs do sistema (`/usr/lib`) e com as libs deste
+diretório (`tools/npu_runtime/A733/lib`), então o runtime embutido é
+compatível com a placa.
