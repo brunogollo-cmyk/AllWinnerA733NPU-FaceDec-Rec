@@ -17,6 +17,8 @@ import logging
 import os
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -56,10 +58,18 @@ BOUNDS: dict[str, tuple[float, float]] = {
 TOGGLES = {
     "access.require_liveness",
     "access.require_match",
+    # Backend selection: CPU vs NPU for each function. Changing takes effect on
+    # next restart (pipeline/model reload).
+    "detector.use_npu",
+    "recognizer.use_npu",
 }
 
 # Changing any of these needs the pipeline to be rebuilt to take effect.
-RESTART_REQUIRED = {"detector.input_size"}
+RESTART_REQUIRED = {
+    "detector.input_size",
+    "detector.use_npu",
+    "recognizer.use_npu",
+}
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 
@@ -132,6 +142,12 @@ class Service:
         self.started = time.time()
         self._queue: queue.Queue[Job] = queue.Queue()
         self._lock = threading.Lock()
+        self._restart = threading.Event()
+
+    @property
+    def restart_requested(self) -> bool:
+        """True once /api/restart was called; the pipeline loop then exits."""
+        return self._restart.is_set()
 
     # ------------------------------------------------------------------ jobs
 
@@ -328,6 +344,25 @@ class Service:
             "reuse_enabled": bool(p and p.cache.enabled),
             "embed_reused": p.reused if p else 0,
             "embed_fresh": p.embedded if p else 0,
+            # effective (loaded) backends
+            "detect_backend": getattr(p.detector, "backend", "cpu") if p else "cpu",
+            "recognizer_backend": getattr(p.recognizer, "backend", "cpu") if p else "cpu",
+            "detect_backend_detail": getattr(p.detector, "backend_detail", None) if p else None,
+            "recognizer_backend_detail": getattr(p.recognizer, "backend_detail", None) if p else None,
+            # requested (saved in config) backends
+            "detector_use_npu": bool(self.cfg.detector.use_npu),
+            "recognizer_use_npu": bool(self.cfg.recognizer.use_npu),
+            "detector_npu_error": getattr(p.detector, "npu_error", None) if p else None,
+            "recognizer_npu_error": getattr(p.recognizer, "npu_error", None) if p else None,
+            "npu_available": bool(
+                p
+                and (
+                    getattr(p.detector, "backend", "cpu") == "npu"
+                    or getattr(p.recognizer, "backend", "cpu") == "npu"
+                    or getattr(p.detector, "npu", None) is not None
+                    or getattr(p.recognizer, "npu", None) is not None
+                )
+            ),
             "queue_depth": self._queue.qsize(),
         }
 
@@ -396,6 +431,75 @@ class Service:
         p.cache.clear()
         p.reused = 0
         p.embedded = 0
+
+    # ----------------------------------------------------------------- control
+
+    def request_restart(self) -> None:
+        """Ask the pipeline loop to stop so the service can be re-executed.
+
+        This must NOT touch the camera or the NPU: those are owned by the
+        pipeline thread, and releasing them from the web thread while inference
+        is running crashes inside the native VIPLite/OpenCV code.
+        """
+        log.info("Restart requested; stopping the pipeline")
+        self._restart.set()
+
+    def exec_restart(self) -> None:
+        """Restart from the pipeline thread, after it has stopped."""
+        try:
+            if self.pipeline is not None:
+                self.pipeline.grabber.release()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.pipeline is not None:
+                for obj in (
+                    getattr(self.pipeline, "detector", None),
+                    getattr(self.pipeline, "recognizer", None),
+                ):
+                    if obj is not None and getattr(obj, "npu", None) is not None:
+                        try:
+                            obj.npu.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+        except Exception:  # noqa: BLE001
+            pass
+        script = os.path.abspath(sys.argv[0])
+        argv = [sys.executable, script, *sys.argv[1:]]
+        try:
+            log.info("Restarting service to apply configuration changes: %s", argv)
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            os.chdir(str(PROJECT_ROOT))
+            time.sleep(0.3)
+            os.execv(argv[0], argv)
+        except Exception:  # noqa: BLE001
+            log.exception("execv failed; spawning a new process instead")
+        try:
+            log_path = PROJECT_ROOT / "facegate.log"
+            try:
+                log_file = open(log_path, "a", buffering=1)
+                stdout = log_file
+                stderr = log_file
+            except Exception:  # noqa: BLE001
+                stdout = subprocess.DEVNULL
+                stderr = subprocess.DEVNULL
+            subprocess.Popen(
+                argv,
+                cwd=str(PROJECT_ROOT),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to spawn restarted service")
+            os._exit(1)
+        os._exit(0)
 
 
 def _area(face):

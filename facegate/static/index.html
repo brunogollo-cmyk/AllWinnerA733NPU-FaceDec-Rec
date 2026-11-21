@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>facegate</title>
-<link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20261120f">
 </head>
 <body>
 
@@ -36,6 +36,23 @@
       <button id="toggleStream" class="secondary">Pause view</button>
       <span class="hint">Recognition runs continuously in the background.</span>
     </div>
+    <div class="row backend-row" id="liveBackends">
+      <label class="inline">Detecção
+        <select id="liveDetectBackend" aria-label="Backend de detecção">
+          <option value="cpu">CPU</option>
+          <option value="npu">NPU</option>
+        </select>
+      </label>
+      <label class="inline">Reconhecimento
+        <select id="liveRecogBackend" aria-label="Backend de reconhecimento">
+          <option value="cpu">CPU</option>
+          <option value="npu">NPU</option>
+        </select>
+      </label>
+      <button id="restartService" class="secondary">Reiniciar serviço</button>
+      <span class="hint" id="backendHint">Seleção CPU/NPU é salva; clique em Reiniciar serviço para aplicar.</span>
+    </div>
+    <div class="row"><span class="hint" id="backendDetail"></span></div>
   </section>
 
   <!-- ----------------------------------------------------- people -->
@@ -173,6 +190,19 @@
           <legend>Detection</legend>
 
           <div class="field">
+            <label for="detector_use_npu">Backend de detecção</label>
+            <select id="detector_use_npu" name="detector.use_npu">
+              <option value="cpu">CPU (YuNet ONNX)</option>
+              <option value="npu">NPU (A733/VIPLite .nb)</option>
+            </select>
+            <p class="hint">
+              Usa a NPU da placa (A733) para detecção quando houver modelo
+              <code>models/npu/yunet.nb</code> e runtime VIPLite. Se indisponível,
+              cai em CPU automaticamente. <strong>Requer reinício.</strong>
+            </p>
+          </div>
+
+          <div class="field">
             <label for="input_size">Detector input size</label>
             <input type="number" id="input_size" name="detector.input_size"
                    step="32" min="64" max="960">
@@ -187,6 +217,22 @@
             <input type="number" id="score_threshold" name="detector.score_threshold"
                    step="0.05" min="0" max="1">
             <p class="hint">Higher ignores low-confidence detections.</p>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Recognition backend</legend>
+
+          <div class="field">
+            <label for="recognizer_use_npu">Backend de reconhecimento (embedding)</label>
+            <select id="recognizer_use_npu" name="recognizer.use_npu">
+              <option value="cpu">CPU (SFace ONNX)</option>
+              <option value="npu">NPU (A733/VIPLite .nb)</option>
+            </select>
+            <p class="hint">
+              Usa a NPU para o embedding SFace (<code>models/npu/sface_int8.nb</code>)
+              quando disponível. <strong>Requer reinício.</strong>
+            </p>
           </div>
         </fieldset>
 
@@ -231,6 +277,6 @@
 </main>
 
 <div id="toast" hidden></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261120f"></script>
 </body>
 </html>

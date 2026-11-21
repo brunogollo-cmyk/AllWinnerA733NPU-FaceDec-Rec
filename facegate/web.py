@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -177,10 +178,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._remove(body)
             if path == "/api/config":
                 return self._json(self.service.update_config(body))
+            if path == "/api/restart":
+                return self._restart()
             return self._error(404, "not found")
         except Exception as exc:  # noqa: BLE001
             log.exception("POST %s failed", path)
             self._error(500, str(exc))
+
+    def _restart(self) -> None:
+        # Respond before the process restarts so the UI gets confirmation.
+        self._json({"ok": True, "restarting": True})
+        try:
+            self.service.request_restart()
+        except Exception:  # noqa: BLE001 - best effort
+            log.exception("restart request failed")
 
     def do_DELETE(self):
         path = urlparse(self.path).path
@@ -240,8 +251,41 @@ def make_handler(service, slot: FrameSlot):
     )
 
 
+class ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def server_bind(self):
+        # Ensure the listening socket can be rebound after an exec/restart and
+        # is not inherited by a restarted process image.
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.socket.set_inheritable(False)
+        except Exception:  # noqa: BLE001 - not critical
+            pass
+        super().server_bind()
+
+
 def serve(cfg: WebConfig, service, slot: FrameSlot) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((cfg.host, cfg.port), make_handler(service, slot))
+    # A restart (exec) can leave the previous listening socket briefly occupied;
+    # retry the bind instead of dying and leaving the UI down.
+    last_error = None
+    server = None
+    for attempt in range(20):
+        try:
+            server = ReusableHTTPServer(
+                (cfg.host, cfg.port), make_handler(service, slot)
+            )
+            break
+        except OSError as exc:
+            last_error = exc
+            log.warning(
+                "bind %s:%d failed (attempt %d/20): %s",
+                cfg.host, cfg.port, attempt + 1, exc,
+            )
+            time.sleep(0.5)
+    if server is None:
+        raise last_error
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("Operator UI on http://%s:%d", cfg.host, cfg.port)

@@ -1,8 +1,10 @@
 # facegate
 
-Real-time face detection and recognition on an Orange Pi 4A (Allwinner sun55iw3,
-8x Cortex-A55, 4GB RAM, 2 TOPS VeriSilicon VIP9000 NPU). Face embedding runs
-on the NPU; detection and liveness run on the CPU.
+Real-time face detection and recognition on Allwinner A733 (Orange Pi Zero 3W,
+2x Cortex-A76 + 6x Cortex-A55, VeriSilicon NPU, VIPLite v2.0) and Allwinner
+sun55iw3/T527 (Orange Pi 4A). Face embedding runs on the NPU; detection can run
+on the NPU (with a converted `.nb` graph) or on the CPU, selectable per-function
+in the web UI. Liveness runs on the CPU.
 
 ## Measured performance on this board
 
@@ -40,25 +42,45 @@ would be granted.
 
 ## About the NPU
 
-The T527's NPU only executes Vivante `.nb` network binaries, so the SFace ONNX
-model was converted with the Allwinner ACUITY toolkit and compiled for this
-board's chip (`VIP9000NANOSI_PLUS_PID0X10000016`). The result agrees closely
-with the CPU model:
+The A733/T527 NPUs only execute Vivante `.nb` network binaries, so ONNX models are
+converted with the Allwinner ACUITY toolkit and compiled for the target chip.
 
-```
-cosine(NPU, CPU) = 0.9916   over 20 real camera crops
-```
+The **A733 builds of both graphs are committed**, so the board runs detection and
+recognition on the NPU out of the box:
 
-and in a live run the two produced the **same identity decision on 70/70
-frames**. That is why switching `recognizer.use_npu` does not invalidate
-`data/facedb.json` - nobody has to re-enrol.
+- `models/npu/yunet.nb` - YuNet detector, 640x640, 12 raw heads (decoded in Python)
+- `models/npu/sface_int8.nb` - SFace embedding, 112x112 -> 128-d, uint8
 
-Set `use_npu: false` to go back to the CPU float32 model at any time. If the
-graph, the VIPLite library or `/dev/vipcore` is missing, facegate logs
+Measured on the A733 (`0x1000003B`, VIPLite 2.0):
+
+- **detection**: ~2.4 ms per graph run (≈14-18 ms per frame including pre/post);
+  identical boxes and scores to the CPU path on a test image;
+- **embedding**: `cosine(NPU, CPU) ≈ 0.98` (int8 quantisation); identity decisions
+  agree on live frames.
+
+Switching `recognizer.use_npu` does not invalidate `data/facedb.json` - nobody has
+to re-enrol, although the similarity margin shifts slightly because the NPU
+embeddings differ from the CPU ones by ~0.98 cosine. Re-enrolling with the NPU
+active restores the widest margin.
+
+**CPU/NPU por função (web UI):** na aba *Live* e em *Settings* há seletores para
+escolher CPU ou NPU em **Detecção** e **Reconhecimento** separadamente. A mudança
+é salva em `config.yaml` e aplicada no próximo reinício do serviço (o
+carregamento do modelo/grafo é feito na inicialização). Se a NPU/runtime/grafo
+não estiver disponível, o backend cai em CPU automaticamente.
+
+A **detecção** na NPU usa `detector.npu_model` (padrão `models/npu/yunet.nb`,
+já incluído para o A733). O runtime VIPLite no Orange Pi Zero 3W (A733) é
+carregado de `/usr/lib` (`libNBGlinker.so` + `libVIPhal.so`, `/dev/vipcore`).
+Os grafos são carregados uma vez e reaproveitados; buffers são mapeados em
+memória host alinhada, como no runtime de referência da Allwinner (`npulib`).
+
+Set `use_npu: false` to go back to the CPU path at any time. If the graph, the
+VIPLite library or `/dev/vipcore` is missing, facegate logs
 `NPU backend unavailable (...) - using CPU` and carries on.
 
-`tools/README-npu.md` documents how the `.nb` was produced and how to rebuild
-it, since the converter only runs in an x86_64 Docker image from Allwinner.
+`tools/README-npu.md` documents how `.nb` graphs are produced and rebuilt, since
+the converter only runs in an x86_64 Docker image from Allwinner.
 
 
 ## Embedding reuse

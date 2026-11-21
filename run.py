@@ -103,6 +103,10 @@ def main() -> int:
     finally:
         if cfg.display.show:
             cv2.destroyAllWindows()
+    # A restart requested from the web UI is executed here, on the main thread,
+    # after the pipeline has fully stopped and released the camera and NPU.
+    if cfg.web.enabled and service.restart_requested:
+        service.exec_restart()
     return 0
 
 

@@ -31,13 +31,16 @@ The model downloads need working internet access on first run. They come from:
 | `face_recognition_sface_2021dec.onnx` | `media.githubusercontent.com` (LFS) |
 | `antispoof_minifas.onnx` | `raw.githubusercontent.com` (plain blob) |
 
-## The NPU graph (optional)
+## The NPU graphs
 
-The `.nb` graph for the T527's NPU is a build artifact and is not committed,
-because producing it needs an x86_64 machine with Allwinner's ACUITY Docker
-image. To use the NPU path, follow [NPU.md](NPU.md).
+The **A733** builds of both graphs are committed under `models/npu/`
+(`yunet.nb` for detection, `sface_int8.nb` for embeddings), so an Orange Pi
+Zero 3W can enable the NPU for both functions with no extra step.
 
-Without it, facegate runs entirely on the CPU and everything still works.
+For other targets (for example the T527) the `.nb` files are build artifacts and
+must be produced on an x86_64 machine with Allwinner's ACUITY Docker image; see
+[NPU.md](NPU.md). Without a compatible graph the selected backend falls back to
+the CPU and everything still works.
 
 ## Camera
 

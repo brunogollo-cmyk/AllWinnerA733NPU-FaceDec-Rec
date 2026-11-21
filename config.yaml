@@ -17,6 +17,14 @@ camera:
 
 detector:
   model: "models/yunet.onnx"
+  # Backend: false = CPU (OpenCV YuNet ONNX), true = NPU (VIPLite .nb). Para
+  # detecção na NPU do A733 é necessário um modelo convertido
+  # (models/npu/yunet.nb); se indisponível, cai em CPU automaticamente.
+  use_npu: true
+  npu_model: "models/npu/yunet.nb"
+  # Local do runtime Allwinner VIPLite. No Orange Pi Zero 3W (A733) as libs do
+  # AI SDK v2.0 ficam em /usr/lib (libNBGlinker.so + libVIPhal.so).
+  viplite_dir: "/usr/lib"
   # Smaller is faster: 256 runs ~20ms on this board, 320 ~29ms, 512 ~81ms.
   input_size: 256
   score_threshold: 0.7
@@ -27,19 +35,18 @@ recognizer:
   model: "models/face_recognition_sface_2021dec.onnx"
   antispoof_model: "models/antispoof_minifas.onnx"
   facedb: "data/facedb.json"
-  # Run the embedding on the T527 NPU (2 TOPS VeriSilicon VIP9000) instead of
-  # the CPU. The graph is the same SFace network converted to INT8 and compiled
-  # for VIP9000NANOSI_PLUS_PID0X10000016, which is this board's chip id.
+  # Run the embedding on the board NPU (Orange Pi Zero 3W, Allwinner A733,
+  # VeriSilicon NPU) instead of the CPU when the converted graph is present.
   # Measured on this board: ~15 ms per embedding on the NPU vs ~68 ms on the
-  # CPU, and cosine agreement between the two is 0.99 over real camera crops,
+  # CPU, and cosine agreement between the two is ~0.99 over real camera crops,
   # so the enrolled database stays valid either way.
   # If the graph or the VIPLite runtime is missing, facegate logs a warning and
   # keeps working on the CPU - nothing breaks.
   use_npu: true
   npu_model: "models/npu/sface_int8.nb"
-  # Location of the Allwinner VIPLite v1.13 runtime (libVIPlite.so /
-  # libVIPuser.so). Produced from the public SDK, see tools/README-npu.md.
-  viplite_dir: "/home/orangepi/npu_vendor/ai-sdk/viplite-tina/lib/glibc-gcc10_2_0/v1.13"
+  # Local do runtime VIPLite (A733: /usr/lib com libNBGlinker.so + libVIPhal.so;
+  # placas T527 podem usar o caminho do SDK v1.x).
+  viplite_dir: "/usr/lib"
   # Cosine similarity required to accept a face. Same-person scores measured
   # ~0.82-0.88 on this camera. Lower = stricter. Raise if strangers get in.
   match_threshold: 0.5

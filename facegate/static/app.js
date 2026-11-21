@@ -72,17 +72,49 @@ async function loadStatus() {
     const s = await api("/api/status");
     const parts = [
       `<b>${fmt(s.fps, 1)}</b> fps`,
-      `${fmt(s.detect_ms, 1)}ms detect`,
-      `${fmt(s.embed_ms, 1)}ms embed`,
+      `${fmt(s.detect_ms, 1)}ms detect (${(s.detect_backend || "cpu").toUpperCase()})`,
+      `${fmt(s.embed_ms, 1)}ms embed (${(s.recognizer_backend || "cpu").toUpperCase()})`,
     ];
     if (s.liveness_enabled) parts.push(`${fmt(s.liveness_ms, 1)}ms liveness`);
     parts.push(`${s.people} enrolled`);
     parts.push(s.camera || "no camera");
     if (!s.camera_connected) parts.push("<b>disconnected</b>");
+
+    const detReq = (s.detector_use_npu !== undefined ? s.detector_use_npu : (s.detect_backend === "npu")) ? "npu" : "cpu";
+    const recReq = (s.recognizer_use_npu !== undefined ? s.recognizer_use_npu : (s.recognizer_backend === "npu")) ? "npu" : "cpu";
+    const detEff = s.detect_backend || "cpu";
+    const recEff = s.recognizer_backend || "cpu";
+    if (detReq !== detEff || recReq !== recEff) {
+      const errs = [];
+      if (detReq === "npu" && detEff !== "npu" && s.detector_npu_error) errs.push("det: " + s.detector_npu_error);
+      if (recReq === "npu" && recEff !== "npu" && s.recognizer_npu_error) errs.push("rec: " + s.recognizer_npu_error);
+      if (errs.length) {
+        parts.push("<b>NPU selecionada (não ativa)</b> " + errs.join(" | "));
+      } else {
+        parts.push("<b>reinício pendente</b> para aplicar CPU/NPU");
+      }
+    }
+
     $("#statline").innerHTML = parts.join(" · ");
+    setBackendSelects(s);
   } catch (e) {
     $("#statline").textContent = "offline";
   }
+}
+
+function setBackendSelects(s) {
+  // Show requested (saved) selection so it "sticks"; effective backend is shown in status.
+  const det = (s && (s.detector_use_npu !== undefined ? (s.detector_use_npu ? "npu" : "cpu") : s.detect_backend)) || "cpu";
+  const rec = (s && (s.recognizer_use_npu !== undefined ? (s.recognizer_use_npu ? "npu" : "cpu") : s.recognizer_backend)) || "cpu";
+  const ld = $("#liveDetectBackend");
+  const lr = $("#liveRecogBackend");
+  if (ld && !ld._userDirty) ld.value = det;
+  if (lr && !lr._userDirty) lr.value = rec;
+  // Mirror into settings selects as well
+  const ds = $("#detector_use_npu");
+  const rs = $("#recognizer_use_npu");
+  if (ds && !ds._userDirty) ds.value = det;
+  if (rs && !rs._userDirty) rs.value = rec;
 }
 
 // --- live -----------------------------------------------------------------
@@ -406,6 +438,17 @@ function fillSettings(cfg) {
   set("camera_height", cfg.camera.height);
   set("camera_fps", cfg.camera.fps);
   set("camera_fourcc", cfg.camera.fourcc);
+
+  const detNpu = !!(cfg.detector && cfg.detector.use_npu);
+  const recNpu = !!(cfg.recognizer && cfg.recognizer.use_npu);
+  const ds = $("#detector_use_npu");
+  const rs = $("#recognizer_use_npu");
+  if (ds) ds.value = detNpu ? "npu" : "cpu";
+  if (rs) rs.value = recNpu ? "npu" : "cpu";
+  const ld = $("#liveDetectBackend");
+  const lr = $("#liveRecogBackend");
+  if (ld) ld.value = detNpu ? "npu" : "cpu";
+  if (lr) lr.value = recNpu ? "npu" : "cpu";
 }
 
 async function loadSettings() {
@@ -413,6 +456,51 @@ async function loadSettings() {
     fillSettings(await api("/api/config"));
   } catch (e) {
     toast("Could not load settings: " + e.message, true);
+  }
+}
+
+function collectBackendChanges(target) {
+  const changes = {};
+  const det = (target && target.detector) || ($("#detector_use_npu") || {}).value;
+  const rec = (target && target.recognizer) || ($("#recognizer_use_npu") || {}).value;
+  if (det !== undefined) changes["detector.use_npu"] = det === "npu";
+  if (rec !== undefined) changes["recognizer.use_npu"] = rec === "npu";
+  return changes;
+}
+
+async function applyBackendChanges(changes, opts) {
+  opts = opts || {};
+  // Optimistically keep the chosen selection visible
+  if (changes["detector.use_npu"] !== undefined) {
+    const v = changes["detector.use_npu"] ? "npu" : "cpu";
+    const ld = $("#liveDetectBackend"), ds = $("#detector_use_npu");
+    if (ld) ld.value = v;
+    if (ds) ds.value = v;
+  }
+  if (changes["recognizer.use_npu"] !== undefined) {
+    const v = changes["recognizer.use_npu"] ? "npu" : "cpu";
+    const lr = $("#liveRecogBackend"), rs = $("#recognizer_use_npu");
+    if (lr) lr.value = v;
+    if (rs) rs.value = v;
+  }
+  try {
+    const r = await post("/api/config", changes);
+    let msg = "Seleção salva (CPU/NPU)";
+    if (r.rejected && r.rejected.length) {
+      msg = "Rejeitado: " + r.rejected.map((x) => x.key).join(", ");
+      toast(msg, true);
+      return r;
+    }
+    if (r.deferred_until_restart && r.deferred_until_restart.length) {
+      msg += ". Clique em Reiniciar serviço para aplicar.";
+    }
+    toast(msg, false);
+    if (opts.reloadSettings) loadSettings();
+    loadStatus();
+    return r;
+  } catch (e) {
+    toast("Falha ao salvar backend: " + e.message, true);
+    throw e;
   }
 }
 
@@ -428,6 +516,7 @@ $("#settingsForm").addEventListener("submit", async (ev) => {
     "input_size", "score_threshold", "camera_width", "camera_height", "camera_fps",
   ].forEach((id) => { changes[id] = $("#" + id).value; });
   changes["camera.fourcc"] = $("#camera_fourcc").value;
+  Object.assign(changes, collectBackendChanges());
 
   try {
     const r = await post("/api/config", changes);
@@ -448,6 +537,52 @@ $("#settingsForm").addEventListener("submit", async (ev) => {
     msg.textContent = e.message;
   }
 });
+
+function wireLiveBackendSelector(id, key) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", () => {
+    el._userDirty = true;
+    const changes = {};
+    changes[key] = el.value === "npu";
+    applyBackendChanges(changes, { reloadSettings: true }).finally(() => {
+      el._userDirty = false;
+    });
+  });
+}
+wireLiveBackendSelector("#liveDetectBackend", "detector.use_npu");
+wireLiveBackendSelector("#liveRecogBackend", "recognizer.use_npu");
+
+async function restartService() {
+  const btn = $("#restartService");
+  if (btn) { btn.disabled = true; btn.textContent = "Reiniciando…"; }
+  try {
+    await post("/api/restart");
+  } catch (e) {
+    // expected: connection may drop while the service restarts
+  }
+  toast("Serviço reiniciando para aplicar CPU/NPU…");
+  const start = Date.now();
+  const poll = async () => {
+    if (Date.now() - start > 45000) {
+      if (btn) { btn.disabled = false; btn.textContent = "Reiniciar serviço"; }
+      toast("Serviço demorou a voltar. Recarregue a página.", true);
+      return;
+    }
+    try {
+      await api("/api/status");
+      if (btn) { btn.disabled = false; btn.textContent = "Reiniciar serviço"; }
+      toast("Serviço reiniciado.");
+      loadStatus();
+      loadSettings();
+    } catch (_) {
+      setTimeout(poll, 1500);
+    }
+  };
+  setTimeout(poll, 2000);
+}
+const restartBtn = $("#restartService");
+if (restartBtn) restartBtn.addEventListener("click", restartService);
 
 // --- boot -----------------------------------------------------------------
 

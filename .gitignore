@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime logs and NPU hang captures
+*.log
+facegate.log
+viplite_hang_capture_*.log
+
+# Biometric/runtime data - never publish
+data/facedb.json
+data/events.jsonl
+faces/
+
+# Large redundant model builds (keep the int8/quantized artifacts only)
+models/face_recognition_sface_2021dec.onnx
+
+# OS/editor
+.DS_Store

@@ -37,6 +37,14 @@ DEFAULTS: dict[str, Any] = {
     },
     "detector": {
         "model": "models/yunet.onnx",
+        # Run face detection on the board's NPU when a converted .nb graph is
+        # present. Falls back to the CPU automatically if unavailable.
+        "use_npu": False,
+        "npu_model": "models/npu/yunet.nb",
+        # Where the Allwinner VIPLite runtime lives (libNBGlinker.so/libVIPhal.so
+        # on A733, or libVIPlite.so/libVIPuser.so on T527). /usr/lib is the
+        # system location on the A733.
+        "viplite_dir": "/usr/lib",
         "input_size": 256,
         "score_threshold": 0.7,
         "nms_threshold": 0.3,
@@ -46,13 +54,13 @@ DEFAULTS: dict[str, Any] = {
         "model": "models/face_recognition_sface_2021dec.onnx",
         "antispoof_model": "models/antispoof_minifas.onnx",
         "facedb": "data/facedb.json",
-        # Run the embedding on the T527 NPU when the converted graph is present.
+        # Run the embedding on the board NPU when the converted graph is present.
         # Falls back to the CPU automatically if it is missing or fails to load.
         "use_npu": True,
         "npu_model": "models/npu/sface_int8.nb",
-        # Where the Allwinner VIPLite runtime lives. The system copy under
-        # /usr/local/lib is preferred; this is the build tree used to produce it.
-        "viplite_dir": "/home/orangepi/npu_vendor/ai-sdk/viplite-tina/lib/glibc-gcc10_2_0/v1.13",
+        # Where the Allwinner VIPLite runtime lives. /usr/lib is the system
+        # location on the A733; T527 boards may use a local SDK path instead.
+        "viplite_dir": "/usr/lib",
         # Cosine similarity above which a face is accepted. Measured self-similarity
         # for the same person is ~0.82-0.88 on this camera; 0.5 leaves headroom while
         # staying well above cross-person similarity. Tune against real enrolments.
@@ -109,6 +117,9 @@ class CameraConfig:
 @dataclass
 class DetectorConfig:
     model: str = "models/yunet.onnx"
+    use_npu: bool = False
+    npu_model: str = "models/npu/yunet.nb"
+    viplite_dir: str = "/usr/lib"
     input_size: int = 256
     score_threshold: float = 0.7
     nms_threshold: float = 0.3
@@ -116,6 +127,12 @@ class DetectorConfig:
 
     def path(self) -> Path:
         return _resolve(self.model)
+
+    def npu_model_path(self) -> Path:
+        return _resolve(self.npu_model)
+
+    def viplite_path(self) -> Path:
+        return Path(self.viplite_dir)
 
 
 @dataclass
@@ -125,9 +142,7 @@ class RecognizerConfig:
     facedb: str = "data/facedb.json"
     use_npu: bool = True
     npu_model: str = "models/npu/sface_int8.nb"
-    viplite_dir: str = (
-        "/home/orangepi/npu_vendor/ai-sdk/viplite-tina/lib/glibc-gcc10_2_0/v1.13"
-    )
+    viplite_dir: str = "/usr/lib"
     match_threshold: float = 0.5
     min_face_size: int = 60
     reuse_window: float = 1.5

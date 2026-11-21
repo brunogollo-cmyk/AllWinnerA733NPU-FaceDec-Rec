@@ -269,6 +269,9 @@ class Pipeline:
                 # stays on the single thread that owns the DNN objects.
                 if self.service is not None:
                     self.service.drain()
+                    if self.service.restart_requested:
+                        log.info("Restart requested; leaving the pipeline loop")
+                        break
 
                 frame = self.grabber.read()
                 if frame is None:

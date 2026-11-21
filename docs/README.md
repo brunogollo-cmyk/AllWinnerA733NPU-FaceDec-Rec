@@ -1,7 +1,8 @@
 # facegate
 
-Face detection, recognition and access decisions on an Orange Pi 4A
-(Allwinner T527), using the board's 2 TOPS NPU for face embedding.
+Face detection, recognition and access decisions on an Orange Pi Zero 3W
+(Allwinner A733, VIPLite v2.0 NPU), with detection and embedding both running on
+the NPU. Also runs on the Allwinner T527 (Orange Pi 4A) with its own `.nb` graphs.
 
 The operator view is a web UI in the browser: live camera view with annotated
 faces, enrolment, the access log, and the tunables. `facegate` runs on the
@@ -32,10 +33,10 @@ webcam  ──►  YuNet detect (CPU)        faces + 5 landmarks
 
 ## Requirements
 
-- Orange Pi 4A (Allwinner T527 / `sun55iw3`), or another aarch64 Linux board
+- Orange Pi Zero 3W (Allwinner A733) or Orange Pi 4A (Allwinner T527), or another aarch64 Linux board
 - Python 3.10+
 - A USB webcam (resolved by USB vendor/product id, not by `/dev/videoN`)
-- Optional: the T527 NPU, for the faster embedding path
+- Optional: the board NPU, for faster detection and embedding (A733 `.nb` graphs are included)
 
 ## Quick start
 
@@ -56,7 +57,7 @@ Open `http://<board-ip>:8080`.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full install, camera setup, boot service |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting, and which ones matter |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pipeline works and why |
-| [docs/NPU.md](docs/NPU.md) | Running the embedding on the T527 NPU |
+| [docs/NPU.md](docs/NPU.md) | Running detection and embedding on the NPU |
 | [docs/API.md](docs/API.md) | HTTP API, usable with `curl` |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threats, limits, and honest caveats |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured numbers and how to reproduce them |
@@ -85,9 +86,9 @@ Full numbers and the methodology are in [docs/PERFORMANCE.md](docs/PERFORMANCE.m
 | SFace | 128-d face embedding | OpenCV Zoo |
 | MiniFASNet V2 SE | live / spoof classification | facenox/face-antispoof-onnx |
 
-The embedding also ships as a Vivante `.nb` graph for the T527 NPU. That file
-is a build artifact and is not committed; see [docs/NPU.md](docs/NPU.md) for
-how to produce it.
+Both the detector and the embedder also ship as Vivante `.nb` graphs for the
+A733 NPU (`models/npu/yunet.nb`, `models/npu/sface_int8.nb`); they are committed.
+For other targets (e.g. T527) they must be rebuilt - see [docs/NPU.md](docs/NPU.md).
 
 ## Security note, up front
 

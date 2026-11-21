@@ -1,16 +1,27 @@
-# Using the T527 NPU for face embedding
+# Using the A733/T527 NPU for face embedding and detection
 
-The Orange Pi 4A's Allwinner T527 carries a 2 TOPS VeriSilicon VIP9000 NPU.
-`facegate` uses it for the SFace embedding, which is the most expensive step in
-the pipeline.
+The Orange Pi Zero 3W (Allwinner A733, VeriSilicon NPU, VIPLite v2.0) and Orange
+Pi 4A (Allwinner T527, VIP9000) can run face workloads on the NPU. `facegate` uses
+it for the SFace embedding (the most expensive step) and for YuNet face detection.
 
-| | CPU | NPU |
+**The A733 builds of both graphs are committed** (`models/npu/yunet.nb` and
+`models/npu/sface_int8.nb`, target `VIP9000NANODI_PLUS_PID0X1000003B`), so both
+functions can run on the NPU on an Orange Pi Zero 3W without rebuilding anything.
+
+| | CPU | NPU (A733 int8) |
 |---|---|---|
-| SFace embed | ~68 ms | **~15 ms** |
-| Agrees with the other path | — | cosine **0.9916** |
+| SFace embed | ~68 ms | **~2 ms per graph run** |
+| YuNet detect (640x640 graph) | ~17 ms @256px | ~2.4 ms per graph run |
+| Agrees with the CPU path | — | cosine **≈0.98** (embedding) |
 
-It is on by default. Set `recognizer.use_npu: false` to turn it off; the
+Embedding is on by default (`recognizer.use_npu: true`); detection is selected
+with `detector.use_npu`. Set `use_npu: false` to go back to the CPU; the enrolled
 database stays valid either way.
+
+**Per-function CPU/NPU selector:** the web UI (Live tab and Settings) lets you
+choose CPU or NPU independently for detection and recognition. The choice is saved
+to `config.yaml` and applied on the next service restart (models/graphs are loaded
+at startup). If the selected NPU path is unavailable, it falls back to CPU.
 
 ## How it works
 
@@ -40,28 +51,43 @@ re-converted model with different dimensions works without code changes.
 
 ## Requirements
 
+- A kernel driver exposing `/dev/vipcore` (module `vipcore` loaded).
+- The VIPLite runtime libraries.
+
+**Orange Pi Zero 3W (A733, AI SDK v2.0, recommended):** the runtime is installed
+system-wide. Point `detector.viplite_dir` / `recognizer.viplite_dir` to `/usr/lib`
+(default). The loader looks for:
+- `libNBGlinker.so` + `libVIPhal.so` (A733 / v2.0), or
+- `libVIPlite.so` + `libVIPuser.so` (T527 / v1.x fallback).
+
+**T527 / SDK v1.x:**
+
 ```bash
-# 1. The VIPLite runtime (public SDK, no NDA)
 git clone --depth 1 -b product-aiot-stable \
     https://gitlab.com/tina5.0_aiot/ai-sdk.git
-
-# 2. A kernel driver exposing /dev/vipcore
-ls -l /dev/vipcore
 ```
 
-`facegate` will use the `glibc-gcc10_2_0` build of VIPLite — it targets glibc
-2.17+ and works on Debian 12. The `aarch64-none-linux-gnu` build is for a
-bare-metal toolchain, and vendor builds targeting Ubuntu 24.04 need glibc 2.38,
-which is newer than this board has.
+Use the `glibc-gcc10_2_0` build for v1.x (glibc 2.17+). Verify `/dev/vipcore`
+exists.
 
 ## Configuration
 
 ```yaml
+detector:
+  use_npu: false                 # true = detecção na NPU (requer yunet.nb convertido)
+  npu_model: "models/npu/yunet.nb"
+  viplite_dir: "/usr/lib"        # A733 (AI SDK v2.0); em T527 use o caminho do SDK v1.x
+
 recognizer:
-  use_npu: true
+  use_npu: true                  # embedding na NPU (requer sface_int8.nb)
   npu_model: "models/npu/sface_int8.nb"
-  viplite_dir: "/path/to/ai-sdk/viplite-tina/lib/glibc-gcc10_2_0/v1.13"
+  viplite_dir: "/usr/lib"
 ```
+
+Os seletores **CPU/NPU** da interface web alteram `detector.use_npu` e
+`recognizer.use_npu` via `POST /api/config` e exigem reinício do serviço para
+carregar o backend escolhido. O endpoint `GET /api/status` expõe `detect_backend`,
+`recognizer_backend` e `npu_available`.
 
 ## Verifying it is actually running
 

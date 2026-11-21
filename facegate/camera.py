@@ -56,7 +56,14 @@ class FrameGrabber:
         self.device: str | None = None
         self.cap: cv2.VideoCapture | None = None
         self._failures = 0
-        self._open()
+        self._last_open_attempt = 0.0
+        try:
+            self._open()
+        except RuntimeError as exc:
+            # Do not abort startup/restart if the camera is briefly unavailable
+            # (e.g. during a service restart handover). read() will keep retrying.
+            log.warning("Camera not ready at startup: %s", exc)
+            self.cap = None
 
     def _open(self) -> None:
         if self.cap is not None:
@@ -72,6 +79,7 @@ class FrameGrabber:
                     f"Plug it in, or set camera.device in config.yaml."
                 )
         self.device = device
+        self._last_open_attempt = time.monotonic()
 
         cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not cap.isOpened():
@@ -116,6 +124,16 @@ class FrameGrabber:
     def read(self):
         """Return the next frame, or None if the device has failed."""
         if self.cap is None:
+            # Attempt to (re)open periodically when no device is available.
+            if time.monotonic() - self._last_open_attempt >= self.cfg.reconnect_delay:
+                try:
+                    self.cfg.device = None
+                    self._open()
+                except RuntimeError as exc:
+                    self._last_open_attempt = time.monotonic()
+                    self._failures += 1
+                    if self._failures == 1 or self._failures % 10 == 0:
+                        log.warning("Camera unavailable, will retry: %s", exc)
             return None
 
         # Drop any frames the driver has queued so we always act on the newest
@@ -133,6 +151,11 @@ class FrameGrabber:
         if self._failures < self.cfg.reconnect_attempts:
             return None
         log.warning("Camera %s lost, attempting reconnect", self.device)
+        try:
+            if self.cap is not None:
+                self.cap.release()
+        except Exception:  # noqa: BLE001
+            pass
         self.cap = None
         time.sleep(self.cfg.reconnect_delay)
         try:

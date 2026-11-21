@@ -12,7 +12,7 @@ import numpy as np
 
 from .config import RecognizerConfig, SFACE_REF_POINTS
 from .detector import Face
-from .npu import load as load_npu
+from .npu import load_recognizer_reason as load_npu_reason
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +32,13 @@ class Match:
 class FaceRecognizer:
     """Turns a detected face into a 128-d embedding, aligned via its landmarks.
 
-    The embedding runs on the T527's NPU when the converted `.nb` graph and the
-    VIPLite runtime are both present, and on the CPU otherwise. The two paths
-    agree closely (measured cosine 0.99 over real camera crops) and produce the
-    same identity decision, so facedb.json is valid for either.
+    Backends (when ``recognizer.use_npu`` is enabled):
+      1. VIPLite .nb graph (A733-compatible) via NpuRecognizer
+      2. OpenCV DNN TIM-VX (ONNX on NPU) if available
+      3. CPU fallback
+
+    The embedding space matches SFace (128-d, L2-normalised) so the enrolled
+    facedb remains valid across backends.
     """
 
     def __init__(self, cfg: RecognizerConfig) -> None:
@@ -45,22 +48,90 @@ class FaceRecognizer:
                 f"Recognizer model not found at {model}. Run ./install.sh to fetch models."
             )
         self.cfg = cfg
-        self._net = cv2.FaceRecognizerSF.create(str(model), "")
+        self._cpu_net = cv2.FaceRecognizerSF.create(str(model), "")
+        self._net = self._cpu_net
         self.last_ms = 0.0
         self.backend = "cpu"
+        self.backend_detail = "cpu"
         self.npu = None
+        self.npu_error = None
+        self._timvx_active = False
 
         if cfg.use_npu:
-            self.npu = load_npu(cfg.npu_model_path(), cfg.viplite_path())
+            # 1) VIPLite .nb (requires graph compiled for this NPU target, e.g. A733)
+            self.npu, v_err = load_npu_reason(cfg.npu_model_path(), cfg.viplite_path())
             if self.npu is not None:
                 self.backend = "npu"
+                self.backend_detail = "npu-viplite"
                 log.info(
-                    "Face embedding on NPU (%s), ~%d ms vs ~68 ms on CPU",
+                    "Face embedding on NPU VIPLite (%s)",
                     cfg.npu_model_path().name,
-                    round(self.npu.last_ms or 15),
                 )
             else:
-                log.warning("NPU requested but unavailable - embedding on CPU")
+                self.npu_error = v_err
+                # 2) OpenCV DNN TIM-VX backend running the ONNX model on the NPU
+                timvx_net, t_err = self._try_timvx(str(model))
+                if timvx_net is not None:
+                    self._net = timvx_net
+                    self._timvx_active = True
+                    self.backend = "npu"
+                    self.backend_detail = "npu-timvx"
+                    # keep VIPLite error for diagnostics but NPU is active via TIM-VX
+                    if v_err:
+                        log.info(
+                            "Face embedding on NPU TIM-VX (%s) (VIPLite unavailable: %s)",
+                            model.name,
+                            v_err,
+                        )
+                    else:
+                        log.info("Face embedding on NPU TIM-VX (%s)", model.name)
+                else:
+                    reasons = []
+                    if v_err:
+                        reasons.append(f"viplite: {v_err}")
+                    if t_err:
+                        reasons.append(f"timvx: {t_err}")
+                    self.npu_error = "; ".join(reasons) if reasons else "NPU indisponível"
+                    log.warning(
+                        "NPU requested but unavailable (%s) - embedding on CPU",
+                        self.npu_error,
+                    )
+
+    def _try_timvx(self, model_path: str) -> tuple[cv2.FaceRecognizerSF | None, str | None]:
+        if not hasattr(cv2, "dnn") or not hasattr(cv2.dnn, "DNN_BACKEND_TIMVX"):
+            return None, "OpenCV sem suporte a DNN_BACKEND_TIMVX"
+        if not hasattr(cv2.dnn, "DNN_TARGET_NPU"):
+            return None, "OpenCV sem suporte a DNN_TARGET_NPU"
+        # OpenCV 5.x "new graph engine" pode aceitar argumentos TIM-VX mas executar
+        # em CPU sem despacho real à NPU (nenhuma carga observada). Só habilita
+        # TIM-VX se o backend/target for reportado como disponível; caso contrário
+        # exige grafo .nb VIPLite compilado para o A733.
+        try:
+            get_targets = getattr(cv2.dnn, "getAvailableTargets", None)
+            if get_targets is not None:
+                targets = list(get_targets(cv2.dnn.DNN_BACKEND_TIMVX) or [])
+                if cv2.dnn.DNN_TARGET_NPU not in targets:
+                    return None, (
+                        "backend TIM-VX/NPU indisponível neste OpenCV (sem aceleração NPU real); "
+                        "forneça .nb VIPLite compilado para A733 (ex.: models/npu/sface_int8.nb, alvo 0x1000003B)"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            net = cv2.FaceRecognizerSF.create(
+                model_path,
+                "",
+                cv2.dnn.DNN_BACKEND_TIMVX,
+                cv2.dnn.DNN_TARGET_NPU,
+            )
+            # Smoke test: ensure inference runs on this device/runtime.
+            dummy = np.zeros((ALIGN_SIZE, ALIGN_SIZE, 3), dtype=np.uint8)
+            feat = net.feature(dummy)
+            if feat is None:
+                return None, "TIM-VX retornou feature nula"
+            return net, None
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
 
     def embed(self, frame: np.ndarray, face: Face) -> np.ndarray | None:
         aligned = self.align(frame, face)
@@ -78,10 +149,22 @@ class FaceRecognizer:
             if feature is not None:
                 self.last_ms = self.npu.last_ms
                 return feature
-            log.warning("NPU inference returned nothing - using CPU for this face")
+            log.warning("NPU VIPLite inference returned nothing - using CPU for this face")
 
         start = time.perf_counter()
-        feature = self._net.feature(aligned)
+        try:
+            feature = self._net.feature(aligned)
+        except Exception:  # noqa: BLE001 - fall back to CPU rather than break
+            if self._timvx_active:
+                log.exception("TIM-VX embedding failed - falling back to CPU")
+                self._net = self._cpu_net
+                self._timvx_active = False
+                self.backend = "cpu"
+                self.backend_detail = "cpu-fallback"
+                self.npu_error = (self.npu_error or "") + "; timvx runtime failure"
+                feature = self._net.feature(aligned)
+            else:
+                raise
         self.last_ms = (time.perf_counter() - start) * 1000
 
         feature = np.asarray(feature, dtype=np.float32).reshape(-1)
