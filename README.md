@@ -83,13 +83,20 @@ grafos `.nb`. Para instalar as libs no sistema:
 sudo ./tools/install_npu_runtime.sh
 ```
 
-O script copia para `/usr/local/lib`, roda `ldconfig` e verifica `/dev/vipcore`.
-Se a placa já tem o SDK/runtime em `/usr/lib`, pode pular esta etapa.
+O script copia as libs para `/usr/local/lib`, roda `ldconfig` e verifica
+`/dev/vipcore`. Se a placa já tem o SDK/runtime em `/usr/lib`, pode pular.
 
-> O módulo de kernel `vipcore` (que cria `/dev/vipcore`) é específico da imagem
-> da placa e **não** acompanha o repositório. Se `/dev/vipcore` não existir,
-> tente `sudo modprobe vipcore`; sem ele o sistema roda em CPU. Detalhes em
-> [`tools/npu_runtime/README.md`](tools/npu_runtime/README.md).
+O módulo de kernel `vipcore` (que cria `/dev/vipcore`) também está no repositório,
+mas é **opt-in** e só instala se o kernel bater exatamente (`vermagic`):
+
+```bash
+sudo ./tools/install_npu_runtime.sh --with-kernel-module
+```
+
+Se `/dev/vipcore` já existir, não instale por cima (`lsmod | grep vipcore`).
+Sem o módulo o sistema roda em CPU. Detalhes em
+[`tools/npu_runtime/README.md`](tools/npu_runtime/README.md) e
+[`tools/npu_runtime/A733/kernel/README.md`](tools/npu_runtime/A733/kernel/README.md).
 
 Valide a NPU antes de seguir:
 

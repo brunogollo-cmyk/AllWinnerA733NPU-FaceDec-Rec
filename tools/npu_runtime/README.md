@@ -7,7 +7,8 @@ grafos `.nb` na NPU do Allwinner A733.
 A733/
 ├── lib/libNBGlinker.so     # VIPLite v2.0 (carrega libVIPhal.so, expõe vip_*)
 ├── lib/libVIPhal.so        # camada de hardware usada pelo linker
-└── include/vip_lite*.h     # cabeçalhos da API (para ferramentas/compilação)
+├── include/vip_lite*.h     # cabeçalhos da API (para ferramentas/compilação)
+└── kernel/vipcore.ko       # módulo de kernel (opt-in, só para o kernel exato)
 ```
 
 ## De onde vieram
@@ -23,12 +24,17 @@ O `facegate` procura o runtime em `viplite_dir` (padrão `/usr/lib`) e também e
 `/usr/local/lib`, então tanto faz instalar via SDK ou via
 `tools/install_npu_runtime.sh`.
 
-## O que **não** está aqui: o `vipcore`
+## O `vipcore` (módulo de kernel)
 
-`/dev/vipcore` é criado pelo **módulo de kernel `vipcore`**, que é específico do
-kernel da imagem da placa e não é redistribuível de forma portável (um `.ko`
-compilado para outro kernel não carrega). Ele vem com a imagem de sistema/SDK da
-Allwinner para o A733.
+`/dev/vipcore` é criado pelo módulo **`vipcore`**. Ele está incluído em
+`A733/kernel/vipcore.ko`, mas é **opt-in** e validado: um `.ko` só carrega no
+kernel exato em que foi compilado (`vermagic=6.6.98-sun60iw2 SMP preempt
+mod_unload aarch64`). O instalador recusa instalar se o kernel não bater. Veja
+[`A733/kernel/README.md`](A733/kernel/README.md) para o porquê e para os
+detalhes de licença (`Dual MIT/GPL`).
+
+Na maioria dos casos a placa já traz o módulo (pacote
+`linux-image-current-sun60iw2`); nesse caso não instale por cima.
 
 Verifique na placa:
 
@@ -52,6 +58,8 @@ substituir por um binário genérico.
 
 ```bash
 sudo ./tools/install_npu_runtime.sh
+# inclui o módulo de kernel, se /dev/vipcore não existir e o kernel bater:
+sudo ./tools/install_npu_runtime.sh --with-kernel-module
 ```
 
 O script copia as libs para `/usr/local/lib`, roda `ldconfig` e verifica

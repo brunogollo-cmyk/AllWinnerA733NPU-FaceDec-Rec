@@ -76,6 +76,7 @@ if [ -e /dev/vipcore ]; then
     echo "  /dev/vipcore present"
 else
     warn "/dev/vipcore missing: the 'vipcore' kernel module is not loaded (NPU will be skipped)."
+    warn "If your kernel matches, install it with: sudo ./tools/install_npu_runtime.sh --with-kernel-module"
 fi
 if [ -e /usr/lib/libNBGlinker.so ] || [ -e /usr/local/lib/libNBGlinker.so ]; then
     echo "  VIPLite libraries found"

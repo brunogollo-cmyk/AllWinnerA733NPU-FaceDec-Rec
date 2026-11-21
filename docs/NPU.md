@@ -10,10 +10,11 @@ functions can run on the NPU on an Orange Pi Zero 3W without rebuilding anything
 
 The userspace runtime is included as well (`tools/npu_runtime/A733/`:
 `libNBGlinker.so` + `libVIPhal.so`); install it with
-`sudo ./tools/install_npu_runtime.sh` if the board does not already ship it, and
-check the whole path with `./.venv/bin/python tools/check_npu.py`. The kernel
-module `vipcore` that provides `/dev/vipcore` comes from the board image and is
-not redistributed here.
+`sudo ./tools/install_npu_runtime.sh` if the board does not already ship it.
+The kernel module `vipcore` (which creates `/dev/vipcore`) is bundled too, but
+installed opt-in and only when its `vermagic` matches the running kernel:
+`sudo ./tools/install_npu_runtime.sh --with-kernel-module`. Most vendor images
+already provide it. Check the whole path with `./.venv/bin/python tools/check_npu.py`.
 
 | | CPU | NPU (A733 int8) |
 |---|---|---|
