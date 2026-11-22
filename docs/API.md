@@ -38,6 +38,8 @@ curl -s -X DELETE $BASE/api/events
 ```json
 {
   "uptime_s": 44.9,
+  "rss_mb": 134,
+  "threads": 24,
   "fps": 10.92,
   "camera": "/dev/video1",
   "camera_connected": true,
@@ -56,7 +58,8 @@ curl -s -X DELETE $BASE/api/events
 
 `embed_ms` is `0.0` on frames where the embedding was reused — that is by
 design, not a missing measurement. Watch `embed_reused` / `embed_fresh` to see
-the hit rate.
+the hit rate. `rss_mb` and `threads` report the service process itself and are
+handy for watching memory over long runs.
 
 ### `GET /api/people`
 

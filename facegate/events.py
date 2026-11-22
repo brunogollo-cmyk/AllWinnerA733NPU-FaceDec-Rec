@@ -10,6 +10,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+#: Rotate the JSONL log at this size, keeping one previous file.
+MAX_LOG_BYTES = 8 * 1024 * 1024
+
 
 class EventLog:
     def __init__(self, path: Path, webhook: str | None = None) -> None:
@@ -17,6 +20,7 @@ class EventLog:
         self.webhook = webhook
         self._lock = threading.Lock()
         self._last: dict[str, float] = {}
+        self._writes = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def _should_emit(self, key: str, cooldown: float) -> bool:
@@ -51,6 +55,9 @@ class EventLog:
             **extra,
         }
         with self._lock:
+            self._writes += 1
+            if self._writes % 256 == 0:
+                self._rotate_if_needed()
             with self.path.open("a") as fh:
                 fh.write(json.dumps(event) + "\n")
         log.info("%s", json.dumps(event))
@@ -59,6 +66,21 @@ class EventLog:
             threading.Thread(
                 target=self._post, args=(event,), daemon=True
             ).start()
+
+    def _rotate_if_needed(self) -> None:
+        """Keep the active log bounded; callers hold self._lock."""
+        try:
+            if self.path.stat().st_size <= MAX_LOG_BYTES:
+                return
+            backup = self.path.with_name(self.path.name + ".1")
+            try:
+                backup.unlink()
+            except FileNotFoundError:
+                pass
+            self.path.rename(backup)
+            log.info("Rotated event log to %s", backup.name)
+        except OSError as exc:
+            log.warning("Could not rotate event log: %s", exc)
 
     def _post(self, event: dict) -> None:
         try:

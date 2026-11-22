@@ -74,6 +74,22 @@ RESTART_REQUIRED = {
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 
 
+def _self_usage() -> tuple[int, int]:
+    """RSS (MB) and thread count of this process, for /api/status."""
+    rss_mb = 0
+    threads = 0
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    rss_mb = int(line.split()[1]) // 1024
+                elif line.startswith("Threads:"):
+                    threads = int(line.split()[1])
+    except OSError:
+        pass
+    return rss_mb, threads
+
+
 class InvalidName(ValueError):
     """Raised when a submitted person name is not safe to use on disk."""
 
@@ -301,11 +317,21 @@ class Service:
             return []
         out: list[dict] = []
         try:
-            with path.open() as fh:
-                lines = fh.readlines()
+            with path.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                # Read only the tail: this endpoint is polled every few
+                # seconds, and reading the whole file made the cost grow with
+                # the log size (CPU and memory spikes on this 1 GB board).
+                chunk = min(size, max(4096, int(limit) * 400))
+                fh.seek(size - chunk)
+                data = fh.read()
         except OSError as exc:
             log.warning("Could not read event log: %s", exc)
             return []
+        lines = data.splitlines()
+        if chunk < size and lines:
+            lines = lines[1:]  # first line may be cut mid-record
         for line in reversed(lines):
             line = line.strip()
             if not line:
@@ -328,8 +354,11 @@ class Service:
 
     def status(self) -> dict:
         p = self.pipeline
+        rss_mb, threads = _self_usage()
         return {
             "uptime_s": round(time.time() - self.started, 1),
+            "rss_mb": rss_mb,
+            "threads": threads,
             "fps": round(p.fps, 2) if p else 0.0,
             "camera": p.grabber.device if p and p.grabber.device else None,
             "camera_connected": bool(p and p.grabber.cap is not None),

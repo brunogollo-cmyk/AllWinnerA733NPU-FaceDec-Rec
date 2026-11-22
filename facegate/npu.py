@@ -391,6 +391,25 @@ class NpuSession:
         self._out_param = self._out_params[0]
         self.out_scale, self.out_zero = self._out_scales[0]
 
+        # Create the numpy views over the host buffers ONCE. Building them per
+        # call (np.ctypeslib.as_array) leaked a small numpy/ctypes object per
+        # output per frame - measured ~240 B x 12 outputs at 10 fps, i.e. about
+        # 100 MB/hour on this board. The float32 destination buffers are reused
+        # as well, so the hot path does no allocation per infernce.
+        self._out_views = []
+        self._out_f32 = []
+        for i in range(self.output_count):
+            ctype = _FORMAT_CTYPES.get(self._out_dtypes[i], ctypes.c_uint8)
+            self._out_views.append(
+                np.ctypeslib.as_array(
+                    ctypes.cast(self._out_ptrs[i], ctypes.POINTER(ctype)),
+                    (self._out_elems[i],),
+                )
+            )
+            self._out_f32.append(
+                np.empty(self._out_elems[i], dtype=np.float32)
+            )
+
         # Prepare and bind buffers once, exactly like Allwinner's npulib. Calling
         # vip_prepare_network again after it succeeded returns an error on VIPLite.
         self._ensure_prepared()
@@ -484,16 +503,19 @@ class NpuSession:
         if status != VIP_SUCCESS:
             raise NpuUnavailable(f"run failed: {status}")
 
-        results = []
-        for i, ptr in enumerate(self._out_ptrs):
+        # Dequantise in place into the preallocated float32 buffers. The
+        # returned arrays are reused by the next inference; callers consume
+        # them before running the graph again.
+        results = self._out_f32
+        for i in range(self.output_count):
             self._vip_flush_buffer(self._out_bufs[i], VIP_BUFFER_OPER_TYPE_INVALIDATE)
-            ctype = _FORMAT_CTYPES.get(self._out_dtypes[i], ctypes.c_uint8)
-            arr = np.ctypeslib.as_array(
-                ctypes.cast(ptr, ctypes.POINTER(ctype)), (self._out_elems[i],)
-            )
-            raw = arr.astype(np.float32)
+            dst = self._out_f32[i]
+            np.copyto(dst, self._out_views[i])
             scale, zp = self._out_scales[i]
-            results.append((raw - np.float32(zp)) * np.float32(scale))
+            if zp:
+                dst -= np.float32(zp)
+            if scale != 1.0:
+                dst *= np.float32(scale)
         self.last_ms = 0.0
         return results
 

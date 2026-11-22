@@ -143,6 +143,10 @@ access:
 | `require_liveness` | `false` disables anti-spoofing entirely. A photograph will be let in. |
 | `liveness_threshold` | See [SECURITY.md](SECURITY.md#the-threshold-has-no-comfortable-value) before changing this. |
 | `event_cooldown` | Suppresses repeated decisions for the same person within this window. |
+
+The event file is rotated once it reaches 8 MB, keeping one previous file
+(`events.jsonl.1`), so it cannot grow without bound. `/api/events` reads only
+the tail of the active file.
 | `webhook` | Optional URL that receives a JSON POST per access event. Useful for requiring a second factor elsewhere. |
 
 ## web
